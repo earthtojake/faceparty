@@ -10,6 +10,7 @@ import * as blazeface from '@tensorflow-models/blazeface';
 import * as posenet from '@tensorflow-models/posenet';
 import * as tfjsWasm from '@tensorflow/tfjs-backend-wasm';
 import {version} from '@tensorflow/tfjs-backend-wasm/dist/version';
+import {TRIANGULATION} from '../lib/triangulation';
 
 import 'react-native-console-time-polyfill';
 import Svg, { G } from 'react-native-svg';
@@ -34,6 +35,25 @@ const inputTensorDims = {
 
 const VIDEO_SIZE = 500;
 
+const setupCamera = async (videoEl) => {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    'audio': false,
+    'video': {
+      facingMode: 'user',
+      // Only setting the video to a specified size in order to accommodate a
+      // point cloud, so on mobile devices accept the default size.
+      width: isMobile ? undefined : VIDEO_SIZE,
+      height: isMobile ? undefined : VIDEO_SIZE
+    },
+  });
+  videoEl.srcObject = stream;
+  return new Promise((resolve) => {
+    videoEl.onloadedmetadata = () => {
+      resolve(videoEl);
+    };
+  });
+}
+
 export default () => {
 
   const models = useRef({
@@ -44,23 +64,23 @@ export default () => {
 
   const [numPoints, setNumPoints] = useState(0);
   const [modelsReady, setModelsReady] = useState(false);
-  const [videoEl, setVideoEl] = useState(null);
+  const [glReady, setGlReady] = useState(false);
+  const [videoReady, setVideoReady] = useState(null);
   const svgRectRef = useRef(null);
   const svgPointRefs = useRef([]).current;
   const cameraRef = useRef(null);
+  const videoDOMRef = useRef(null);
   const glRef = useRef(null);
 
   const loadFacemesh = async () => {
     const facemeshModel = await facemesh.load({
       maxFaces: 1,
     });
-    facemeshModel.estimateFaces = timeit("facemesh", facemeshModel.estimateFaces, 100);
     models.facemesh = facemeshModel;
   }
 
   const loadBlazeface = async () => {
     const blazefaceModel = await blazeface.load();
-    blazefaceModel.estimateFaces = timeit("blazeface", blazefaceModel.estimateFaces, 100);
     models.blazeface = blazefaceModel;
   }
 
@@ -72,7 +92,6 @@ export default () => {
       multiplier: 0.75,
       quantBytes: 2
     });
-    posenetModel.estimateSinglePose = timeit("posenet", posenetModel.estimateSinglePose, 100);
     models.posenet = posenetModel;
   }
 
@@ -85,46 +104,24 @@ export default () => {
 
   const [hasPermission, setHasPermission] = useState(null);
 
-  useEffect(() => {
-    (async () => {
-      if (videoEl && modelsReady) {
-        // start animation loop
-        renderPredictions();
-      }
-    })()
-  }, [videoEl, modelsReady]);
+  const initVideo = () => {
+    videoDOMRef.current = getVideoElFromDOM();
+    if (videoDOMRef.current && videoDOMRef.current.readyState !== 4) {
+      setupCamera(videoDOMRef.current).then(() => {
+        setVideoReady(true);
+      })
+    }
+  }
 
   useEffect(() => {
-    const cameraEl = document.getElementById('camera-container');
-    if (cameraEl && !videoEl) {
-      const videoEls = cameraEl.getElementsByTagName('video');
-      if (videoEls.length === 1) {
-        (async () => {
-          const videoEl = await setupCamera(videoEls[0]);
-          setVideoEl(videoEl);
-        })()
-      }
-    }
+    initVideo()
   })
 
-  const setupCamera = async (videoEl) => {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      'audio': false,
-      'video': {
-        facingMode: 'user',
-        // Only setting the video to a specified size in order to accommodate a
-        // point cloud, so on mobile devices accept the default size.
-        width: isMobile ? undefined : VIDEO_SIZE,
-        height: isMobile ? undefined : VIDEO_SIZE
-      },
-    });
-    videoEl.srcObject = stream;
-    return new Promise((resolve) => {
-      videoEl.onloadedmetadata = () => {
-        resolve(videoEl);
-      };
-    });
-  }
+  useEffect(() => {
+    if (!videoReady) {
+      initVideo()
+    }
+  }, [videoReady]);
 
   useEffect(() => {
     (async () => {
@@ -139,52 +136,135 @@ export default () => {
     })()
   }, [])
 
-  if (hasPermission === null) {
-    return <View />
-  }
-  if (hasPermission === false) {
-    return <Text>No access to camera</Text>
-  }
-
-  const renderPredictions = async () => {
-
-    if (videoEl && modelsReady) {
-
-      const {facemesh, posenet, blazeface} = models;
-
-      if (facemesh) {
-        const faces = await facemesh.estimateFaces(videoEl);
-        if (faces && faces.length > 0) {
-          const { scaledMesh, boundingBox } = faces[0];
-          renderBoundingBox(boundingBox.topLeft[0], boundingBox.bottomRight[0]);
-          renderPoints(scaledMesh.map(pt => [pt[0], pt[1]]));
-        }
+  const getVideoElFromDOM = () => {
+    const cameraEl = document.getElementById('camera-container');
+    if (cameraEl) {
+      const videoEls = cameraEl.getElementsByTagName('video');
+      if (videoEls.length === 1) {
+        return videoEls[0];
       }
-
-      // if (blazeface) {
-      //   const faces = await blazeface.estimateFaces(videoEl, false);
-      //   if (faces && faces.length > 0) {
-      //     const { topLeft, bottomRight, landmarks } = faces[0];
-      //     // renderBoundingBox(topLeft, bottomRight);
-      //   }
-      // }
-
-      // if (posenet) {
-      //   const flipHorizontal = Platform.OS === 'ios' ? false : true;
-      //   const pose = await posenet.estimateSinglePose(videoEl, { flipHorizontal });
-      //   if (pose && pose.keypoints && pose.keypoints.length > 0) {
-      //     const pts = pose.keypoints
-      //       .filter(k => k.score > 0.2)
-      //       .map(k => [k.position.x, k.position.y])
-      //     // renderPoints(pts);
-      //   }
-      // }
-
     }
-
-    requestAnimationFrame(renderPredictions);
-
   }
+
+  useEffect(() => {
+
+    (async () => {
+
+      if (glReady && modelsReady && videoReady) {
+
+        const width = VIDEO_SIZE*2;
+        const height = VIDEO_SIZE*2;
+
+        const renderer = new Renderer({ gl:glRef.current, width, height, clearColor: 0xFFFFFF })
+        // renderer.setClearColor( 0xffff00, 0.1 );
+
+        const fov = 45
+        const z = (height/2) / Math.tan(fov*Math.PI/360)
+
+        const camera = new THREE.PerspectiveCamera(fov, 1, 0.01, z)
+        const scene = new THREE.Scene()
+        camera.position.z = z/2;
+        camera.position.y = VIDEO_SIZE/2
+        camera.position.x = VIDEO_SIZE/2
+
+        const sun = new THREE.DirectionalLight( 0xffffff, 0.75 );
+        sun.position.set( VIDEO_SIZE/2, VIDEO_SIZE/2, z );
+        sun.castShadow = true;
+        scene.add(sun);
+
+        const createPlane = (nFaces: number) => {
+          const geometry = new THREE.BufferGeometry();
+          const vertices = new Float32Array(new Array(nFaces*9).fill(0))
+          geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3))
+          const material = new THREE.MeshPhongMaterial( { side: THREE.DoubleSide, color: 0xE0AC69 } );
+          const plane = new THREE.Mesh( geometry, material );
+          return plane;
+        }
+
+        const updateFace = (plane: THREE.Mesh, pos: number, face: number[][]) => {
+          face.forEach((points, index) => {
+            //@ts-ignore
+            updateVertex(plane.geometry, pos*3+index, points)
+          })
+        }
+
+        const updateVertex = (geometry: THREE.BufferGeometry, index: number, point: number[]) => {
+          const position = geometry.attributes.position.array;
+          //@ts-ignore
+          position[index*3] = point[0];
+          //@ts-ignore
+          position[index*3+1] = point[1];
+          //@ts-ignore
+          position[index*3+2] = point[2];
+          //@ts-ignore
+          geometry.attributes.position.needsUpdate = true;
+        }
+
+        const normalizeX = (x) => VIDEO_SIZE-x;
+        const normalizeY = (y) => VIDEO_SIZE-y;
+
+        const N_FACES = TRIANGULATION.length/3;
+        const facePlane = createPlane(N_FACES);
+        scene.add(facePlane);
+
+        sun.target = facePlane;
+
+        async function animate() {
+
+          const {facemesh} = models;
+          let faces = null;
+          // hot-reloading unmounts video el, catch and reset here
+          try {
+            faces = await facemesh.estimateFaces(videoDOMRef.current);
+          } catch (_) {
+            setVideoReady(false);
+          }
+          
+          if (faces && faces.length > 0) {
+            
+            const { scaledMesh, annotations } = faces[0];
+
+            const scaledMeshIndexMap = {};
+            scaledMesh.forEach((point, ptIdx) => {
+              Object.entries(annotations).forEach(([key, values]) => {
+                //@ts-ignore
+                const idx = values.indexOf(point);
+                if (idx !== -1) {
+                  if (!scaledMeshIndexMap[key]) scaledMeshIndexMap[key] = [];
+                  scaledMeshIndexMap[key].push(ptIdx);
+                }
+              })
+            })
+
+            const normalizedMesh = scaledMesh.map(pt => [normalizeX(pt[0]), normalizeY(pt[1]), pt[2]]);
+
+            for (let i = 0; i < N_FACES; i++) {
+              const facePoints = [
+                TRIANGULATION[i * 3], TRIANGULATION[i * 3 + 1],
+                TRIANGULATION[i * 3 + 2]
+              ]
+                .map(index => normalizedMesh[index])
+              updateFace(facePlane, i, facePoints);
+            }
+            //@ts-ignore
+            facePlane.geometry = new THREE.Geometry().fromBufferGeometry( facePlane.geometry );
+            facePlane.geometry.mergeVertices();
+            facePlane.geometry.computeVertexNormals();
+            facePlane.geometry = new THREE.BufferGeometry().fromGeometry( facePlane.geometry );
+
+          }
+
+          requestAnimationFrame( animate );
+          renderer.render( scene, camera );
+
+        }
+
+        animate();
+        
+      }
+    })()
+
+  }, [glReady, modelsReady, videoReady]);
 
   const renderPoints = (pts: number[][]) => {
     setNumPoints(pts.length);
@@ -215,6 +295,13 @@ export default () => {
     />)
   }
 
+  if (hasPermission === null) {
+    return <View />
+  }
+  if (hasPermission === false) {
+    return <Text>No access to camera</Text>
+  }
+
   return (
     <View
       style={styles.cameraContainer}
@@ -224,7 +311,7 @@ export default () => {
         style={{flex: 1}}
         ref={cameraRef}
       />
-      {modelsReady && <View style={styles.overlay}>
+      {/* {modelsReady && <View style={styles.overlay}>
         <Svg height='100%' width='100%'>
           <G key={'facebox_1'}>
             {svgPoints}
@@ -234,54 +321,12 @@ export default () => {
             />
           </G>
         </Svg>
-      </View>}
+      </View>} */}
       <GLView
         style={styles.overlay}
         onContextCreate={async (gl: ExpoWebGLRenderingContext) => {
-          
-          // const { drawingBufferWidth: width, drawingBufferHeight: height } = gl
-          // const sceneColor = 0x6ad6f0
-
-          // // Create a WebGLRenderer without a DOM element
-          // const renderer = new Renderer({ gl, width, height, clearColor: sceneColor })
-          // const camera = new THREE.PerspectiveCamera(75, width / height, 0.01, 1000)
-          // const scene = new THREE.Scene()
-
-          // var geometry = new THREE.BoxGeometry();
-          // var material = new THREE.MeshBasicMaterial( { color: 0x00ff00 } );
-          // var cube = new THREE.Mesh( geometry, material );
-          // scene.add( cube );
-
-          // renderer.render(scene, camera);
-
-          // let faceShape = null;
-
-          // async function animate() {
-          //   if (videoEl && modelsReady) {
-          //     const {facemesh} = models;
-          //     if (facemesh) {
-          //       const faces = await facemesh.estimateFaces(videoEl);
-          //       if (faces.length > 0) {
-          //         const {scaledMesh} = faces[0];
-          //         if (!faceShape) {
-          //           const geometry = new THREE.Geometry();
-          //           scaledMesh.forEach(pt => geometry.vertices.push(
-          //             new THREE.Vector3(pt[0], pt[1], pt[2])
-          //           ))
-          //           geometry.computeBoundingSphere();
-          //           const material = new THREE.MeshBasicMaterial( {color: 0xffff00, side: THREE.DoubleSide} );
-          //           const plane = new THREE.Mesh( geometry, material );
-          //           scene.add(plane)
-          //           // create shape, add to scene
-          //         }
-          //       }
-          //     }
-          //   }
-          //   requestAnimationFrame( animate );
-          //   renderer.render( scene, camera );
-          // }
-          // animate();
-
+          glRef.current = gl;
+          setGlReady(true);
         }}
       />
     </View>
