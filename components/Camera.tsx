@@ -11,13 +11,10 @@ import * as posenet from '@tensorflow-models/posenet';
 import * as tfjsWasm from '@tensorflow/tfjs-backend-wasm';
 import {version} from '@tensorflow/tfjs-backend-wasm/dist/version';
 import {TRIANGULATION} from '../lib/triangulation';
+import {ANNOTATIONS} from '../lib/annotations';
 
 import 'react-native-console-time-polyfill';
-import Svg, { G } from 'react-native-svg';
-import timeit from '../lib/timeit';
 import { isBrowser, isMobile } from 'react-device-detect';
-import FaceBox from './FaceBox';
-import FacePoint from './FacePoint';
 
 const BACKEND_TO_USE = isBrowser ? 'wasm' : 'rn-webgl';
 
@@ -132,7 +129,7 @@ export default () => {
         setHasPermission(status === 'granted');
         cameraRef.current.setNativeProps({type: Camera.Constants.Type.front});
       }
-      await timeit("init", loadModels)()
+      await loadModels()
     })()
   }, [])
 
@@ -156,27 +153,37 @@ export default () => {
         const height = VIDEO_SIZE*2;
 
         const renderer = new Renderer({ gl:glRef.current, width, height, clearColor: 0xFFFFFF })
-        // renderer.setClearColor( 0xffff00, 0.1 );
 
-        const fov = 45
+        const fov = 30
         const z = (height/2) / Math.tan(fov*Math.PI/360)
 
         const camera = new THREE.PerspectiveCamera(fov, 1, 0.01, z)
         const scene = new THREE.Scene()
+        scene.fog = new THREE.Fog( 0xffffff, 1, 5000 );
+        scene.fog.color.setHSL( 0.6, 0, 1 );
+
         camera.position.z = z/2;
         camera.position.y = VIDEO_SIZE/2
         camera.position.x = VIDEO_SIZE/2
 
-        const sun = new THREE.DirectionalLight( 0xffffff, 0.75 );
-        sun.position.set( VIDEO_SIZE/2, VIDEO_SIZE/2, z );
-        sun.castShadow = true;
-        scene.add(sun);
+        const dirLight = new THREE.DirectionalLight( 0xffffff, 0.5 );
+        dirLight.position.set( VIDEO_SIZE/2, VIDEO_SIZE/2, z );
+        dirLight.color.setHSL( 0.1, 0.1, 1 );
+        dirLight.castShadow = true;
+				dirLight.position.multiplyScalar( 50 );
+        scene.add(dirLight);
 
-        const createPlane = (nFaces: number) => {
+        const hemiLight = new THREE.HemisphereLight( 0xffffff, 0xffffff, 0.5 );
+        // hemiLight.position.set( VIDEO_SIZE/2, VIDEO_SIZE/2, z );
+        hemiLight.color.setHSL( 0.6, 0.75, 1 );
+				hemiLight.groundColor.setHSL( 0.095, 0.5, 1 );
+        scene.add(hemiLight);
+
+        const createPlane = (nFaces: number, color = 0xC68642) => {
           const geometry = new THREE.BufferGeometry();
           const vertices = new Float32Array(new Array(nFaces*9).fill(0))
           geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3))
-          const material = new THREE.MeshPhongMaterial( { side: THREE.DoubleSide, color: 0xE0AC69 } );
+          const material = new THREE.MeshToonMaterial( { side: THREE.DoubleSide, color } );
           const plane = new THREE.Mesh( geometry, material );
           return plane;
         }
@@ -200,6 +207,41 @@ export default () => {
           geometry.attributes.position.needsUpdate = true;
         }
 
+        const updatePlane = (plane: THREE.Mesh, faces: number[][][]) => {
+          
+          faces.forEach((face, pos) => updateFace(plane, pos, face));
+
+          //smooth planes
+          //@ts-ignore
+          facePlane.geometry = new THREE.Geometry().fromBufferGeometry( facePlane.geometry );
+          facePlane.geometry.mergeVertices();
+          facePlane.geometry.computeVertexNormals();
+          facePlane.geometry = new THREE.BufferGeometry().fromGeometry( facePlane.geometry );
+
+        }
+
+        const createLine = (points: number[][]) => {
+          const vec = points.map(point => new THREE.Vector3(...point));
+          const geometry = new THREE.BufferGeometry().setFromPoints(vec);
+          const material = new THREE.LineBasicMaterial( { color: 0x0000ff } );
+          return new THREE.LineLoop( geometry, material );
+        }
+
+        const updateLine = (line: THREE.Line, points: number[][]) => {
+          //@ts-ignore
+          const position = line.geometry.attributes.position.array;
+          points.forEach((point, index) => {
+            //@ts-ignore
+            position[index*3] = point[0];
+            //@ts-ignore
+            position[index*3+1] = point[1];
+            //@ts-ignore
+            position[index*3+2] = point[2];
+          })
+          //@ts-ignore
+          line.geometry.attributes.position.needsUpdate = true;
+        }
+
         const normalizeX = (x) => VIDEO_SIZE-x;
         const normalizeY = (y) => VIDEO_SIZE-y;
 
@@ -207,7 +249,16 @@ export default () => {
         const facePlane = createPlane(N_FACES);
         scene.add(facePlane);
 
-        sun.target = facePlane;
+        let lipsPlane = null;
+
+        const getFaceForPoint = (mesh: number[][], i: number) => {
+          return [
+            TRIANGULATION[i * 3], TRIANGULATION[i * 3 + 1],
+            TRIANGULATION[i * 3 + 2]
+          ].map(index => mesh[index]);
+        }
+
+        let featureLines = {};
 
         async function animate() {
 
@@ -224,33 +275,114 @@ export default () => {
             
             const { scaledMesh, annotations } = faces[0];
 
-            const scaledMeshIndexMap = {};
-            scaledMesh.forEach((point, ptIdx) => {
-              Object.entries(annotations).forEach(([key, values]) => {
-                //@ts-ignore
-                const idx = values.indexOf(point);
-                if (idx !== -1) {
-                  if (!scaledMeshIndexMap[key]) scaledMeshIndexMap[key] = [];
-                  scaledMeshIndexMap[key].push(ptIdx);
-                }
-              })
-            })
-
             const normalizedMesh = scaledMesh.map(pt => [normalizeX(pt[0]), normalizeY(pt[1]), pt[2]]);
 
+            const annotationGroups = {};
+            
+            annotationGroups['leftEyebrow'] = [
+              ...annotations["leftEyebrowLower"],
+              ...annotations["leftEyebrowUpper"].reverse()
+            ];
+
+            const lipFaces = [];
+            let triIndexes = {};
+            scaledMesh.forEach((_, index) => {
+              if (ANNOTATIONS[index] === 'leftEyebrowLower' || ANNOTATIONS[index] === 'leftEyebrowUpper') {
+                // this index maps to a TRIANGULATION index VALUE
+                TRIANGULATION.forEach((t,i) => {
+                  if (t === index) {
+                    const j = (i-i%3)/3;
+                    const pts = getFaceForPoint(scaledMesh, j);
+                    const inBounds = pts.every(pt => annotationGroups['leftEyebrow'].indexOf(pt) !== -1);
+                    if (!inBounds) {
+                      return;
+                    }
+                    if (!triIndexes[j]) triIndexes[j] = []
+                    triIndexes[j].push(t);
+                  }
+                })
+              }
+            })
+            
+            const facePoints = [];
             for (let i = 0; i < N_FACES; i++) {
-              const facePoints = [
-                TRIANGULATION[i * 3], TRIANGULATION[i * 3 + 1],
-                TRIANGULATION[i * 3 + 2]
-              ]
-                .map(index => normalizedMesh[index])
-              updateFace(facePlane, i, facePoints);
+              const face = getFaceForPoint(normalizedMesh, i);
+              facePoints.push(face);
             }
+
             //@ts-ignore
-            facePlane.geometry = new THREE.Geometry().fromBufferGeometry( facePlane.geometry );
-            facePlane.geometry.mergeVertices();
-            facePlane.geometry.computeVertexNormals();
-            facePlane.geometry = new THREE.BufferGeometry().fromGeometry( facePlane.geometry );
+            Object.keys(triIndexes).forEach(i => {
+              const face = getFaceForPoint(normalizedMesh, parseInt(i)).map(pts => [pts[0], pts[1], pts[2]]);
+              lipFaces.push(face);
+            })
+
+            if (!lipsPlane) {
+              lipsPlane = createPlane(Object.keys(lipFaces).length, 0xdc3753);
+              scene.add(lipsPlane);
+            }
+
+            updatePlane(facePlane, facePoints);
+            updatePlane(lipsPlane, lipFaces);
+
+            annotationGroups['rightEyebrow'] = [
+              ...annotations["rightEyebrowLower"],
+              ...annotations["rightEyebrowUpper"].reverse()
+            ];
+
+            annotationGroups['leftEye2'] = [
+              ...annotations["leftEyeLower2"],
+              ...annotations["leftEyeUpper2"].reverse()
+            ];
+          
+            annotationGroups['rightEye2'] = [
+              ...annotations["rightEyeLower2"],
+              ...annotations["rightEyeUpper2"].reverse()
+            ];
+          
+            annotationGroups['leftEye1'] = [
+              ...annotations["leftEyeLower1"],
+              ...annotations["leftEyeUpper1"].reverse()
+            ];
+          
+            annotationGroups['rightEye1'] = [
+              ...annotations["rightEyeLower1"],
+              ...annotations["rightEyeUpper1"].reverse()
+            ];
+          
+            annotationGroups['leftEye0'] = [
+              ...annotations["leftEyeLower0"],
+              ...annotations["leftEyeUpper0"].reverse()
+            ];
+          
+            annotationGroups['rightEye0'] = [
+              ...annotations["rightEyeLower0"],
+              ...annotations["rightEyeUpper0"].reverse()
+            ];
+          
+            annotationGroups['outerMouth'] = [
+              ...annotations["lipsUpperOuter"],
+              ...annotations["lipsLowerOuter"].reverse()
+            ];
+          
+            annotationGroups['innerMouth'] = [
+              ...annotations["lipsUpperInner"],
+              ...annotations["lipsLowerInner"].reverse()
+            ];
+
+            Object.entries(annotationGroups).forEach(([key, _featurePoints]) => {
+              //@ts-ignore
+              const featurePoints = _featurePoints.map(pt => [normalizeX(pt[0]), normalizeY(pt[1]), pt[2]]);
+              //@ts-ignore
+              if (!featureLines[key]) {
+                //@ts-ignore
+                featureLines[key] = createLine(featurePoints);
+                //@ts-ignore
+                scene.add(featureLines[key]);
+              } else {
+                //@ts-ignore
+                updateLine(featureLines[key], featurePoints);
+              }
+            })
 
           }
 
@@ -265,35 +397,6 @@ export default () => {
     })()
 
   }, [glReady, modelsReady, videoReady]);
-
-  const renderPoints = (pts: number[][]) => {
-    setNumPoints(pts.length);
-    pts.forEach((pt, idx) => {
-      const node = svgPointRefs[idx];
-      if (node) {
-        node.setNativeProps({cx: VIDEO_SIZE-pt[0], cy: pt[1]});
-      }
-    })
-  }
-
-  const renderBoundingBox = (topLeft: number[], bottomRight: number[]) => {
-    const width = bottomRight[0] - topLeft[0];
-    const x = VIDEO_SIZE-topLeft[0]-width;
-    const y = topLeft[1];
-    const height = bottomRight[1] - y;
-    if (svgRectRef.current) {
-      svgRectRef.current.setNativeProps({x, y, width, height});
-    }
-  }
-
-  const svgPoints = [];
-  for (let i = 0; i < numPoints; i++) {
-    svgPoints.push(<FacePoint 
-      key={i}
-      id={i}
-      onMount={(ref) => svgPointRefs[i] = ref}
-    />)
-  }
 
   if (hasPermission === null) {
     return <View />
@@ -311,17 +414,6 @@ export default () => {
         style={{flex: 1}}
         ref={cameraRef}
       />
-      {/* {modelsReady && <View style={styles.overlay}>
-        <Svg height='100%' width='100%'>
-          <G key={'facebox_1'}>
-            {svgPoints}
-            <FaceBox
-              id={'facebox'}
-              onMount={(ref) => svgRectRef.current = ref}
-            />
-          </G>
-        </Svg>
-      </View>} */}
       <GLView
         style={styles.overlay}
         onContextCreate={async (gl: ExpoWebGLRenderingContext) => {
