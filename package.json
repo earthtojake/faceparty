@@ -22,6 +22,7 @@
     "expo-gl": "~8.1.0",
     "expo-three": "https://github.com/joelugh/expo-three/tarball/master",
     "next": "^9.3.6-canary.9",
+    "next-images": "^1.4.0",
     "react": "16.9.0",
     "react-device-detect": "^1.11.14",
     "react-dom": "16.9.0",
