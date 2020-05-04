@@ -108,6 +108,14 @@ const StaticImageTest = ({
               ...norm(annotations['leftEyebrowUpper']),
               ...norm(annotations['leftEyebrowLower']).reverse(),
             ],
+            'rightEye3': [
+              ...norm(annotations['rightEyeUpper2']),
+              ...norm(annotations['rightEyeLower3']).reverse(),
+            ],
+            'leftEye3': [
+              ...norm(annotations['leftEyeUpper2']),
+              ...norm(annotations['leftEyeLower3']).reverse(),
+            ],
             'rightEye2': [
               ...norm(annotations['rightEyeUpper2']),
               ...norm(annotations['rightEyeLower2']).reverse(),
@@ -151,11 +159,13 @@ const StaticImageTest = ({
           Object.entries(featureSetsDict).forEach(([featureKey, featureSet]) => {
             featureTriIdxs[featureKey] = computeTriIndexes(featureSet, normMesh);
           });
-
+          
           renderFaceMesh(testID+'face', scene, normMesh);
           renderFaceMesh(testID+'lips', scene, normMesh, featureTriIdxs['lipsOuter'], 0x8b160e);
           renderFaceMesh(testID+'rbrow', scene, normMesh, featureTriIdxs['rightEyebrow'], 0x654321);
           renderFaceMesh(testID+'lbrow', scene, normMesh, featureTriIdxs['leftEyebrow'], 0x654321);
+          renderFaceMesh(testID+'reye3', scene, normMesh, featureTriIdxs['rightEye3'], 0xFF69B4);
+          renderFaceMesh(testID+'leye3', scene, normMesh, featureTriIdxs['leftEye3'], 0xFF69B4);
           renderFaceMesh(testID+'reye2', scene, normMesh, featureTriIdxs['rightEye2'], 0x8b160e);
           renderFaceMesh(testID+'leye2', scene, normMesh, featureTriIdxs['leftEye2'], 0x8b160e);
           renderFaceMesh(testID+'reye1', scene, normMesh, featureTriIdxs['rightEye1'], 0xFFFFFF);

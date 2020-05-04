@@ -6,6 +6,8 @@ export default function FaceTest() {
   return (
     <View style={styles.container}>
       <StaticImageTest testID='hugh' source={require('../assets/face.png')} />
+      <StaticImageTest testID='jake' source={require('../assets/face2.png')} />
+      <StaticImageTest testID='blink2' source={require('../assets/blink2.png')} />
       <StaticImageTest testID='blink' source={require('../assets/face-blink.png')} />
     </View>
   );
