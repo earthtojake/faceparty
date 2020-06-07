@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { StyleSheet, Text, View, Platform } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { Camera } from 'expo-camera';
 import { THREE } from 'expo-three';
 import { GLView, ExpoWebGLRenderingContext } from 'expo-gl'
@@ -155,14 +155,22 @@ export default () => {
           // hot-reloading unmounts video el, catch and reset here
           try {
             faces = await facemesh.estimateFaces(videoDOMRef.current);
+            if (!videoReady) {
+              setVideoReady(true);
+            }
           } catch (_) {
-            setVideoReady(false);
-            console.warn('video unmount');
+            if (videoReady) {
+              setVideoReady(false);
+              console.warn('video unmount');
+            }
           }
-          if (faces.length > 0) {
-            const {scaledMesh, annotations} = faces[0];
-            const normMesh = scaledMesh.map(pt => [VIDEO_SIZE-pt[0], VIDEO_SIZE-pt[1], pt[2]]);
-            renderFaceMesh('face1', scene, normMesh, annotations);
+          if (faces != null && faces.length > 0) {
+            const {scaledMesh, boundingBox} = faces[0];
+            const {topLeft, bottomRight} = boundingBox;
+            const width = Math.abs(topLeft[0][0] - bottomRight[0][0]);
+            const height = Math.abs(topLeft[0][1] - bottomRight[0][1]);
+            const normMesh = scaledMesh.map(pt => [(VIDEO_SIZE-pt[0]) * height/width, (VIDEO_SIZE-pt[1]), 0]);
+            renderFaceMesh('face1', scene, normMesh);
           }
 
           requestAnimationFrame( animate );
@@ -223,5 +231,6 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
     zIndex: 20,
+    backgroundColor: 'white',
   }
 });

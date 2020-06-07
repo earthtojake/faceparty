@@ -1,6 +1,5 @@
-// @generated: @expo/next-adapter@2.0.33
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import Camera from '../components/Camera';
 
 export default function App() {

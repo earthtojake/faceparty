@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { View, Image } from 'react-native';
+import { View, Image, Text } from 'react-native';
 import { GLView, ExpoWebGLRenderingContext } from 'expo-gl';
 import * as facemesh from '@tensorflow-models/facemesh';
 import { prepareImageDOM } from '../lib/dom';
 import { useTFModel } from '../lib/ml';
-import { initRenderer, initSceneAndCamera, renderFaceMesh, renderPoint } from '../lib/gl';
+import { initRenderer, initSceneAndCamera, renderFaceMesh, renderPoint, createLine } from '../lib/gl';
 import { TRIANGULATION } from '../lib/triangulation';
 
 const IMG_WIDTH = 400;
@@ -81,6 +81,9 @@ const StaticImageTest = ({
   const [imgReady, setImgReady] = useState(false);
   const facemeshModel = useTFModel(facemesh, { maxFaces: 1 });
 
+  const [triIdxs, setTriIdxs] = useState({});
+  const [idxs, setIdxs] = useState({});
+
   useEffect(() => {
     (async () => {
       if (facemeshModel && gl && imgReady) {
@@ -90,9 +93,14 @@ const StaticImageTest = ({
         const [scene, camera] = initSceneAndCamera(IMG_WIDTH, IMG_HEIGHT);
 
         if (faces.length > 0) {
-          const {scaledMesh, annotations} = faces[0];
+          const {scaledMesh, annotations, boundingBox} = faces[0];
+          const {topLeft, bottomRight} = boundingBox;
+          console.log(topLeft, bottomRight);
+          const width = Math.abs(topLeft[0][0] - bottomRight[0][0]);
+          const height = Math.abs(topLeft[0][1] - bottomRight[0][1]);
+          console.log(width, height);
 
-          const norm = (pts) => pts.map(pt => [pt[0], IMG_HEIGHT-pt[1], pt[2]]);
+          const norm = (pts) => pts.map(pt => [pt[0], (IMG_HEIGHT-pt[1]) * width / height, pt[2]]);
           const normMesh = norm(scaledMesh);
           
           const featurePointsDict = {
@@ -100,12 +108,16 @@ const StaticImageTest = ({
               ...norm(annotations["lipsUpperOuter"]),
               ...norm(annotations["lipsLowerOuter"]).reverse()
             ],
+            'lipsInner': [
+              ...norm(annotations["lipsUpperInner"]),
+              ...norm(annotations["lipsLowerInner"]).reverse()
+            ],
             'rightEyebrow': [
-              ...norm(annotations['rightEyebrowUpper']),
+              ...norm(annotations['rightEyebrowUpper']).slice(1),
               ...norm(annotations['rightEyebrowLower']).reverse(),
             ],
             'leftEyebrow': [
-              ...norm(annotations['leftEyebrowUpper']),
+              ...norm(annotations['leftEyebrowUpper']).slice(1),
               ...norm(annotations['leftEyebrowLower']).reverse(),
             ],
             'rightEye3': [
@@ -142,6 +154,20 @@ const StaticImageTest = ({
             ]
           }
 
+          // for each feature point, find in scaled mesh, save scaled mesh idx
+          const featurePointIdxs: {[key: string]: Array<number>} = {};
+          const featurePointsEntries = Object.entries(featurePointsDict);
+          featurePointsEntries.forEach(([featureKey, featurePoints]) => {
+            featurePointIdxs[featureKey] = []; // init array
+            featurePoints.forEach(featurePoint => {
+              const idx = normMesh.findIndex((meshPoint) => featurePoint[0] === meshPoint[0] && featurePoint[1] === meshPoint[1] && featurePoint[2] === meshPoint[2])
+              if (idx !== -1) {
+                featurePointIdxs[featureKey].push(idx);
+              }
+            })
+          });
+          setIdxs(featurePointIdxs);
+
           const featureSetsDict = {};
 
           normMesh.forEach((pt, idx) => {
@@ -159,19 +185,15 @@ const StaticImageTest = ({
           Object.entries(featureSetsDict).forEach(([featureKey, featureSet]) => {
             featureTriIdxs[featureKey] = computeTriIndexes(featureSet, normMesh);
           });
+          setTriIdxs(featureTriIdxs);
           
-          renderFaceMesh(testID+'face', scene, normMesh);
-          renderFaceMesh(testID+'lips', scene, normMesh, featureTriIdxs['lipsOuter'], 0x8b160e);
-          renderFaceMesh(testID+'rbrow', scene, normMesh, featureTriIdxs['rightEyebrow'], 0x654321);
-          renderFaceMesh(testID+'lbrow', scene, normMesh, featureTriIdxs['leftEyebrow'], 0x654321);
-          renderFaceMesh(testID+'reye3', scene, normMesh, featureTriIdxs['rightEye3'], 0xFF69B4);
-          renderFaceMesh(testID+'leye3', scene, normMesh, featureTriIdxs['leftEye3'], 0xFF69B4);
-          renderFaceMesh(testID+'reye2', scene, normMesh, featureTriIdxs['rightEye2'], 0x8b160e);
-          renderFaceMesh(testID+'leye2', scene, normMesh, featureTriIdxs['leftEye2'], 0x8b160e);
-          renderFaceMesh(testID+'reye1', scene, normMesh, featureTriIdxs['rightEye1'], 0xFFFFFF);
-          renderFaceMesh(testID+'leye1', scene, normMesh, featureTriIdxs['leftEye1'], 0xFFFFFF);
-          renderFaceMesh(testID+'reye0', scene, normMesh, featureTriIdxs['rightEye0'], 0x313456);
-          renderFaceMesh(testID+'leye0', scene, normMesh, featureTriIdxs['leftEye0'], 0x313456);
+          renderFaceMesh(testID+'face', scene, normMesh, featurePointIdxs, featureTriIdxs);
+
+          Object.values(featurePointIdxs).forEach((featureIdxs) => {
+            const points = featureIdxs.map(idx => normMesh[idx]);
+            const line = createLine(points);
+            scene.add(line);
+          })
           
         }
         renderer.render( scene, camera );
@@ -179,18 +201,28 @@ const StaticImageTest = ({
     })();
   }, [facemeshModel, gl, imgReady])
 
-  return <View style={{ flex: 1, flexDirection: 'row' }} nativeID={imgContainerID}>
-    <Image
-      style={{ width: IMG_WIDTH, height: IMG_HEIGHT }}
-      source={source}
-      onLoad={() => setImgReady(true)}
-    />
-    <GLView
-      style={{ width: IMG_WIDTH, height: IMG_HEIGHT }}
-      onContextCreate={async (gl: ExpoWebGLRenderingContext) => {
-        setGL(gl);
-      }}
-    />
+  return <View style={{width: '100%'}}>
+    <View style={{ flex: 1, flexDirection: 'row' }} nativeID={imgContainerID}>
+      <Image
+        style={{ width: IMG_WIDTH, height: IMG_HEIGHT }}
+        source={source}
+        onLoad={() => setImgReady(true)}
+      />
+      <GLView
+        style={{ width: IMG_WIDTH, height: IMG_HEIGHT }}
+        onContextCreate={async (gl: ExpoWebGLRenderingContext) => {
+          setGL(gl);
+        }}
+      />
+    </View>
+    <Text>
+      TRIANGULATION ={' '}
+      {JSON.stringify(triIdxs)}
+    </Text>
+    <Text>
+      INDEXES ={' '}
+      {JSON.stringify(idxs)}
+    </Text>
   </View>
 
 }

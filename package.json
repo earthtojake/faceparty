@@ -20,6 +20,7 @@
     "expo": "^37.0.0",
     "expo-camera": "~8.2.0",
     "expo-gl": "~8.1.0",
+    "expo-pixi": "^1.2.0",
     "expo-three": "https://github.com/joelugh/expo-three/tarball/master",
     "next": "^9.3.6-canary.9",
     "next-images": "^1.4.0",
